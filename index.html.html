@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Lucky 3-Digit Draw</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; }
+    .wrap { display: grid; grid-template-columns: 1fr 340px; gap: 16px; align-items: start; }
+    .card { border: 1px solid #ddd; border-radius: 14px; padding: 16px; box-shadow: 0 1px 6px rgba(0,0,0,.06); background: #fff; }
+    .digits { display: flex; gap: 12px; justify-content: center; margin: 18px 0 10px; }
+    .digit {
+      width: 90px; height: 110px; display: grid; place-items: center;
+      border-radius: 18px; border: 2px solid #111; font-size: 64px; font-weight: 800;
+      letter-spacing: 2px;
+    }
+    .muted { color: #666; font-size: 14px; }
+    .btns { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin-top: 12px; }
+    button { padding: 10px 14px; border-radius: 12px; border: 1px solid #111; background: #111; color: #fff; cursor: pointer; }
+    button.secondary { background: #fff; color: #111; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    ul { margin: 10px 0 0; padding: 0 0 0 18px; }
+    li { margin: 6px 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 18px; }
+    .row { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+    .pill { padding: 6px 10px; border-radius: 999px; border: 1px solid #ddd; font-size: 13px; }
+
+    /* Fullscreen polish (we toggle .fullscreen on <html>) */
+    .fullscreen body { margin: 0; }
+    .fullscreen .wrap { grid-template-columns: 1fr 380px; padding: 18px; }
+    .fullscreen .digit { width: 140px; height: 160px; font-size: 96px; }
+    .fullscreen h2 { font-size: 28px; margin-top: 8px; }
+    .fullscreen .card { border-radius: 18px; }
+
+    /* Confetti canvas overlays everything */
+    #confetti {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 9999;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="confetti"></canvas>
+
+  <h2>🎟️ Lucky 3-Digit Draw</h2>
+  <p class="muted">กด “เริ่มสุ่มเลข” ระบบจะทยอยออกเลขครบ 3 ตัวภายใน ~7 วินาที (ไฟล์เสียงจะเล่นไปจนจบ)</p>
+
+  <!-- IMPORTANT: put drum-roll2.mp3 in the SAME folder as this html -->
+  <audio id="sfx" src="drum-roll2.mp3" preload="auto"></audio>
+
+  <div class="wrap">
+    <div class="card">
+      <div class="row">
+        <div class="pill">โหมด: สุ่ม 000–999 (เลขซ้ำได้)</div>
+        <div class="pill" id="status">พร้อมสุ่ม</div>
+      </div>
+
+      <div class="digits">
+        <div class="digit" id="d1">–</div>
+        <div class="digit" id="d2">–</div>
+        <div class="digit" id="d3">–</div>
+      </div>
+
+      <div class="btns">
+        <button id="start">🎰 เริ่มสุ่มเลข</button>
+        <button class="secondary" id="reset">รีเซ็ตหน้าจอ</button>
+        <button class="secondary" id="clearHistory">ล้างประวัติ</button>
+        <button class="secondary" id="fullscreenBtn">Lock หน้าจอเต็ม</button>
+      </div>
+
+      <p class="muted" style="margin-top:10px;">
+        ถ้าเสียงไม่ดัง ให้ลองกด “เริ่มสุ่มเลข” อีกครั้ง (เบราว์เซอร์บางตัวต้องเริ่มเสียงด้วยการคลิก)
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <strong>📜 เลขที่ออกแล้ว</strong>
+        <span class="muted" id="count">0 ครั้ง</span>
+      </div>
+      <ul id="history"></ul>
+    </div>
+  </div>
+
+<script>
+  // ---------- Elements ----------
+  const d1 = document.getElementById('d1');
+  const d2 = document.getElementById('d2');
+  const d3 = document.getElementById('d3');
+  const statusEl = document.getElementById('status');
+
+  const startBtn = document.getElementById('start');
+  const resetBtn = document.getElementById('reset');
+  const clearBtn = document.getElementById('clearHistory');
+  const fullscreenBtn = document.getElementById('fullscreenBtn');
+
+  const historyEl = document.getElementById('history');
+  const countEl = document.getElementById('count');
+
+  const sfx = document.getElementById('sfx');
+
+  // ---------- State ----------
+  let target = null;           // "XYZ"
+  let running = false;
+  let history = [];
+
+  // ---------- Helpers ----------
+  function pad3(n){ return String(n).padStart(3,'0'); }
+  function setStatus(t){ statusEl.textContent = t; }
+
+  function renderHistory(){
+    historyEl.innerHTML = '';
+    [...history].reverse().forEach(num => {
+      const li = document.createElement('li');
+      li.textContent = num;
+      historyEl.appendChild(li);
+    });
+    countEl.textContent = `${history.length} ครั้ง`;
+  }
+
+  function stopAudio(){
+    try { sfx.pause(); sfx.currentTime = 0; } catch (_) {}
+  }
+
+  async function playAudioFromStart(){
+    try {
+      sfx.currentTime = 0;
+      await sfx.play();
+    } catch (_) {
+      // If blocked by browser, user can click again.
+    }
+  }
+
+  function resetScreen(){
+    running = false;
+    target = null;
+    d1.textContent = '–';
+    d2.textContent = '–';
+    d3.textContent = '–';
+    startBtn.disabled = false;
+    setStatus('พร้อมสุ่ม');
+    stopAudio();
+    stopConfetti();
+  }
+
+  function pickTarget(){
+    const n = Math.floor(Math.random()*1000); // 0..999 (repeatable)
+    target = pad3(n);
+  }
+
+  async function rollDigitFor(el, finalDigit, durationMs){
+    const interval = 60;
+    const start = performance.now();
+    while (performance.now() - start < durationMs) {
+      el.textContent = Math.floor(Math.random()*10);
+      await new Promise(r => setTimeout(r, interval));
+    }
+    el.textContent = finalDigit;
+  }
+
+  async function runAuto7s(){
+    // Total 7000ms -> match your mp3 timing so the end "tada" in the file hits nicely
+    const t1 = 2300, t2 = 2300, t3 = 2400; // sum=7000
+    setStatus('กำลังสุ่ม…');
+
+    await rollDigitFor(d1, target[0], t1);
+    await rollDigitFor(d2, target[1], t2);
+    await rollDigitFor(d3, target[2], t3);
+
+    setStatus(`ออกแล้ว: ${target}`);
+    history.push(target);
+    renderHistory();
+
+    // Confetti on result (no extra sound — your mp3 has its own ending)
+    fireConfetti();
+  }
+
+  // ---------- Button handlers ----------
+  startBtn.addEventListener('click', async () => {
+    if (running) return;
+    running = true;
+
+    resetScreen();      // clears screen + stops old audio/confetti
+    pickTarget();
+
+    startBtn.disabled = true;
+    await playAudioFromStart();
+    await runAuto7s();
+
+    running = false;
+    startBtn.disabled = false;
+    setStatus('กดเริ่มสุ่มรอบถัดไป');
+  });
+
+  resetBtn.addEventListener('click', () => {
+    resetScreen();
+  });
+
+  clearBtn.addEventListener('click', () => {
+    history = [];
+    renderHistory();
+  });
+
+  // Fullscreen "Lock"
+  function setFullscreenUI(isFs){
+    document.documentElement.classList.toggle('fullscreen', isFs);
+    fullscreenBtn.textContent = isFs ? 'ออกจากเต็มจอ' : 'Lock หน้าจอเต็ม';
+  }
+
+  fullscreenBtn.addEventListener('click', async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+        setFullscreenUI(true);
+      } else {
+        await document.exitFullscreen();
+        setFullscreenUI(false);
+      }
+    } catch (_) {}
+  });
+
+  document.addEventListener('fullscreenchange', () => {
+    setFullscreenUI(!!document.fullscreenElement);
+  });
+
+  // ---------- Confetti ----------
+  const canvas = document.getElementById('confetti');
+  const ctx = canvas.getContext('2d');
+  let confetti = [];
+  let confettiAnim = null;
+  let confettiEndAt = 0;
+
+  function resizeCanvas(){
+    canvas.width = window.innerWidth * devicePixelRatio;
+    canvas.height = window.innerHeight * devicePixelRatio;
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  function rand(min,max){ return Math.random()*(max-min)+min; }
+
+function fireConfetti(){
+  resizeCanvas();
+  const countPerSide = 120;   // จำนวนต่อข้าง
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+
+  confetti = [];
+
+  // ยิงจากซ้าย
+  for(let i=0;i<countPerSide;i++){
+    confetti.push({
+      x: 0,
+      y: h * 0.5 + rand(-120, 120),
+      vx: rand(4, 9),
+      vy: rand(-6, -12),
+      g: rand(0.12, 0.22),
+      r: rand(6, 12),
+      rot: rand(0, Math.PI*2),
+      vr: rand(-0.25, 0.25),
+      color: `hsl(${Math.floor(rand(0,360))} 90% 55%)`,
+      life: rand(80, 140)
+    });
+  }
+
+  // ยิงจากขวา
+  for(let i=0;i<countPerSide;i++){
+    confetti.push({
+      x: w,
+      y: h * 0.5 + rand(-120, 120),
+      vx: rand(-9, -4),
+      vy: rand(-6, -12),
+      g: rand(0.12, 0.22),
+      r: rand(6, 12),
+      rot: rand(0, Math.PI*2),
+      vr: rand(-0.25, 0.25),
+      color: `hsl(${Math.floor(rand(0,360))} 90% 55%)`,
+      life: rand(80, 140)
+    });
+  }
+
+  confettiEndAt = performance.now() + 2500; // ~2.5 วิ
+  if (confettiAnim) cancelAnimationFrame(confettiAnim);
+  animateConfetti();
+}
+
+
+  function stopConfetti(){
+    confetti = [];
+    if (confettiAnim) cancelAnimationFrame(confettiAnim);
+    confettiAnim = null;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+  }
+
+  function animateConfetti(){
+    const now = performance.now();
+    ctx.clearRect(0,0,window.innerWidth,window.innerHeight);
+
+    confetti.forEach(p => {
+      p.vy += p.g;
+      p.x += p.vx;
+      p.y += p.vy;
+      p.rot += p.vr;
+      p.life -= 1;
+
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.r, -p.r/2, p.r*2, p.r);
+      ctx.restore();
+    });
+
+    confetti = confetti.filter(p => p.life > 0 && p.y < window.innerHeight + 80);
+
+    if (now < confettiEndAt && confetti.length > 0){
+      confettiAnim = requestAnimationFrame(animateConfetti);
+    } else {
+      stopConfetti();
+    }
+  }
+
+  // init
+  renderHistory();
+</script>
+</body>
+</html>
